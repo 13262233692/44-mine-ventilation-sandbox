@@ -236,6 +236,36 @@ namespace MineVentilation.Editor
             Debug.Log("[矿井通风] 已切换为Newton-Raphson解算模式");
         }
 
+        [MenuItem("矿井通风/瓦斯突出→采区A工作面", false, 7)]
+        public static void TriggerMethaneOutburstA()
+        {
+            var simulator = FindObjectOfType<VentilationSimulator>();
+            if (simulator == null || simulator.HazardManager == null) return;
+
+            simulator.HazardManager.TriggerOutburstAtNode(6);
+            Debug.Log("[矿井通风] 已在采区A工作面触发瓦斯突出");
+        }
+
+        [MenuItem("矿井通风/瓦斯突出→采区B工作面", false, 8)]
+        public static void TriggerMethaneOutburstB()
+        {
+            var simulator = FindObjectOfType<VentilationSimulator>();
+            if (simulator == null || simulator.HazardManager == null) return;
+
+            simulator.HazardManager.TriggerOutburstAtNode(7);
+            Debug.Log("[矿井通风] 已在采区B工作面触发瓦斯突出");
+        }
+
+        [MenuItem("矿井通风/清除瓦斯模拟", false, 9)]
+        public static void ClearMethaneSimulation()
+        {
+            var simulator = FindObjectOfType<VentilationSimulator>();
+            if (simulator == null || simulator.HazardManager == null) return;
+
+            simulator.HazardManager.ResetSimulation();
+            Debug.Log("[矿井通风] 已清除瓦斯弥散模拟");
+        }
+
         [MenuItem("矿井通风/导出网络数据", false, 10)]
         public static void ExportNetworkData()
         {

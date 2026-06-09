@@ -23,6 +23,16 @@ namespace MineVentilation
         public bool AutoResolveOnChange = true;
         public float ResolveInterval = 0.5f;
 
+        [Header("Methane Hazard")]
+        public float MethaneExplosionLimit = 0.05f;
+        public float MethaneWarningLimit = 0.01f;
+        public float MethaneSimulationSpeed = 1.0f;
+        public float MethaneOutburstRate = 0.15f;
+        public float MethaneOutburstDuration = 30f;
+        public float MethaneDiffusion = 0.22f;
+        public float MethaneCellSize = 5f;
+        public float ClickDetectRadius = 20f;
+
         [Header("UI References")]
         public UnityEngine.UI.Text StatusText;
         public UnityEngine.UI.Text IterationText;
@@ -38,22 +48,26 @@ namespace MineVentilation
         private VentilationNetwork _network;
         private HybridVentilationSolver _solver;
         private VentilationNetworkMapper _mapper;
+        private MethaneHazardManager _hazardManager;
         private SolverResult _lastResult;
         private float _resolveTimer;
         private bool _networkDirty;
         private bool _isSolving;
         private string _solverStatus = "";
         private float _solverStartTime;
+        private int _selectedNodeId = -1;
 
         public VentilationNetwork Network => _network;
         public HybridVentilationSolver Solver => _solver;
         public SolverResult LastResult => _lastResult;
         public VentilationNetworkMapper Mapper => _mapper;
+        public MethaneHazardManager HazardManager => _hazardManager;
         public bool IsSolving => _isSolving;
 
         void Awake()
         {
             _mapper = gameObject.AddComponent<VentilationNetworkMapper>();
+            _hazardManager = gameObject.AddComponent<MethaneHazardManager>();
         }
 
         void Start()
@@ -61,12 +75,19 @@ namespace MineVentilation
             BuildDemoNetwork();
             RunSolver();
             BuildVisualization();
+            InitializeHazardManager();
         }
 
         void Update()
         {
             HandleCameraControl();
             HandleKeyboardInput();
+            HandleMouseClick();
+
+            if (_hazardManager != null && _hazardManager.SimulationActive)
+            {
+                _hazardManager.UpdateSimulation(Time.deltaTime);
+            }
 
             if (_isSolving)
             {
@@ -88,6 +109,55 @@ namespace MineVentilation
                     RunSolverAsync();
                 }
             }
+        }
+
+        void InitializeHazardManager()
+        {
+            if (_hazardManager != null && _network != null)
+            {
+                _hazardManager.ExplosionLimit = MethaneExplosionLimit;
+                _hazardManager.WarningLimit = MethaneWarningLimit;
+                _hazardManager.SimulationSpeed = MethaneSimulationSpeed;
+                _hazardManager.OutburstEmissionRate = MethaneOutburstRate;
+                _hazardManager.OutburstDuration = MethaneOutburstDuration;
+                _hazardManager.DiffusionCoefficient = MethaneDiffusion;
+                _hazardManager.CellSize = MethaneCellSize;
+                _hazardManager.Initialize(_network, _mapper);
+            }
+        }
+
+        void HandleMouseClick()
+        {
+            if (Input.GetMouseButtonDown(0) && !Input.GetMouseButton(1))
+            {
+                var cam = Camera.main;
+                if (cam == null) return;
+
+                Ray ray = cam.ScreenPointToRay(Input.mousePosition);
+                RaycastHit hit;
+
+                if (Physics.Raycast(ray, out hit, 500f))
+                {
+                    int nodeId = _hazardManager.DetectClickedNode(hit.point, ClickDetectRadius);
+                    if (nodeId >= 0)
+                    {
+                        _selectedNodeId = nodeId;
+                        var node = _network.GetNode(nodeId);
+                        Debug.Log($"[通风模拟] 选中节点: {node.Name} (ID:{nodeId})");
+                    }
+                }
+            }
+        }
+
+        void TriggerOutburstAtSelectedNode()
+        {
+            if (_selectedNodeId < 0 || _hazardManager == null) return;
+
+            var node = _network.GetNode(_selectedNodeId);
+            if (node == null) return;
+
+            _hazardManager.TriggerOutburstAtNode(_selectedNodeId);
+            Debug.Log($"[瓦斯突出] 在'{node.Name}'触发瓦斯突出! 排放速率{MethaneOutburstRate}/s");
         }
 
         public void BuildDemoNetwork()
@@ -136,8 +206,7 @@ namespace MineVentilation
         {
             _network = new VentilationNetwork();
 
-            int surfaceNode = 0;
-            _network.AddNode(surfaceNode, "进风井口", new Vector3(0f, 0f, 0f));
+            _network.AddNode(0, "进风井口", new Vector3(0f, 0f, 0f));
             _network.AddNode(1, "井底车场", new Vector3(0f, -80f, 0f));
 
             _network.AddFan(0, "主通风机", 5000f, -50f, -1.0f);
@@ -428,6 +497,7 @@ namespace MineVentilation
                 _network.ResetAllFlows();
                 RunSolver();
                 BuildVisualization();
+                InitializeHazardManager();
             }
 
             if (Input.GetKeyDown(KeyCode.D))
@@ -435,12 +505,39 @@ namespace MineVentilation
                 BuildDemoNetwork();
                 RunSolver();
                 BuildVisualization();
+                InitializeHazardManager();
             }
 
             if (Input.GetKeyDown(KeyCode.T))
             {
                 BuildStressTestNetwork();
                 RunSolverAsync();
+            }
+
+            if (Input.GetKeyDown(KeyCode.M))
+            {
+                TriggerOutburstAtSelectedNode();
+            }
+
+            if (Input.GetKeyDown(KeyCode.C))
+            {
+                if (_hazardManager != null)
+                {
+                    _hazardManager.ResetSimulation();
+                    Debug.Log("[瓦斯弥散] 已重置瓦斯模拟");
+                }
+            }
+
+            if (Input.GetKeyDown(KeyCode.Alpha6))
+            {
+                _selectedNodeId = 6;
+                TriggerOutburstAtSelectedNode();
+            }
+
+            if (Input.GetKeyDown(KeyCode.Alpha7))
+            {
+                _selectedNodeId = 7;
+                TriggerOutburstAtSelectedNode();
             }
         }
 
@@ -467,7 +564,7 @@ namespace MineVentilation
 
         void OnGUI()
         {
-            GUILayout.BeginArea(new Rect(10, 10, 420, 700));
+            GUILayout.BeginArea(new Rect(10, 10, 440, 800));
             GUILayout.Label("<b>深部矿井通风模拟沙盘</b>", new GUIStyle(GUI.skin.label) { fontSize = 18, fontStyle = FontStyle.Bold });
             GUILayout.Space(5);
 
@@ -489,10 +586,31 @@ namespace MineVentilation
                     GUILayout.Label(_lastResult.Diagnostics);
                 }
 
-                GUILayout.Space(5);
-                GUILayout.Label("─── 各巷道风量 ───", new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold });
+                GUILayout.Space(3);
 
-                int maxDisplay = Mathf.Min(_network.Edges.Count, 30);
+                if (_hazardManager != null && _hazardManager.SimulationActive)
+                {
+                    Color prevC = GUI.color;
+                    GUI.color = _hazardManager.AlarmEdgeCount > 0 ? Color.red : Color.yellow;
+                    GUILayout.Label($"⚠ 瓦斯弥散中 | 最高浓度: {_hazardManager.GlobalMaxConcentration:P1} | 报警巷道: {_hazardManager.AlarmEdgeCount} | 活跃源: {_hazardManager.ActiveSourceCount}");
+                    GUI.color = prevC;
+                }
+
+                GUILayout.Space(3);
+
+                if (_selectedNodeId >= 0)
+                {
+                    var selNode = _network.GetNode(_selectedNodeId);
+                    if (selNode != null)
+                    {
+                        GUILayout.Label($"▶ 选中: {selNode.Name} (ID:{_selectedNodeId})");
+                    }
+                }
+
+                GUILayout.Space(3);
+                GUILayout.Label("─── 巷道风量 & 瓦斯浓度 ───", new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold });
+
+                int maxDisplay = Mathf.Min(_network.Edges.Count, 25);
                 for (int i = 0; i < maxDisplay; i++)
                 {
                     var edge = _network.Edges[i];
@@ -504,12 +622,19 @@ namespace MineVentilation
                     string fanLabel = edge.FanId >= 0 ? $" [风机{edge.FanId}]" : "";
                     string resistLabel = edge.Resistance < 0.01f ? " ⚠短路" : "";
 
+                    float ch4 = _hazardManager != null ? _hazardManager.GetEdgeConcentration(edge.Id) : 0f;
+                    bool isAlarm = _hazardManager != null && _hazardManager.IsEdgeInAlarm(edge.Id);
+                    string ch4Label = ch4 > 0.001f ? $" | CH₄:{ch4:P1}" : "";
+                    string alarmLabel = isAlarm ? " 💥超限!" : "";
+
                     Color prevColor = GUI.color;
-                    if (Mathf.Abs(flow) < 4f) GUI.color = Color.red;
+                    if (isAlarm) GUI.color = new Color(1f, 0.2f, 0f);
+                    else if (ch4 >= MethaneWarningLimit) GUI.color = Color.yellow;
+                    else if (Mathf.Abs(flow) < 4f) GUI.color = Color.red;
                     else if (Mathf.Abs(flow) > 50f) GUI.color = Color.cyan;
                     else GUI.color = Color.white;
 
-                    GUILayout.Label($"{edge.Name}{fanLabel}{resistLabel}: {direction} {Mathf.Abs(flow):F2} m³/s");
+                    GUILayout.Label($"{edge.Name}{fanLabel}{resistLabel}: {direction} {Mathf.Abs(flow):F1}m³/s{ch4Label}{alarmLabel}");
                     GUI.color = prevColor;
                 }
 
@@ -521,6 +646,8 @@ namespace MineVentilation
                 GUILayout.Space(5);
                 GUILayout.Label("─── 操作 ───", new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold });
                 GUILayout.Label("[Space] 重新解算  [R] 重置  [D] 演示  [T] 压力测试");
+                GUILayout.Label("[左键] 选中节点  [M] 触发瓦斯突出  [C] 清除瓦斯");
+                GUILayout.Label("[6] 采区A突出  [7] 采区B突出");
                 GUILayout.Label("[右键拖拽] 旋转  [滚轮] 缩放");
             }
 

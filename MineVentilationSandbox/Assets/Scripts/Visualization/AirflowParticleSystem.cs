@@ -25,6 +25,12 @@ namespace MineVentilation.Visualization
         public bool FlowReversed;
         public float NormalizedFlowSpeed;
 
+        [Header("Hazard State")]
+        public bool InAlarmMode;
+        public bool InWarningMode;
+        public float AlarmIntensity;
+        public float MethaneConcentration;
+
         private ParticleSystem _particleSystem;
         private ParticleSystem.MainModule _mainModule;
         private ParticleSystem.EmissionModule _emissionModule;
@@ -166,6 +172,98 @@ namespace MineVentilation.Visualization
             float t = Mathf.Clamp01(absFlow / 80f);
             float size = Mathf.Lerp(MinParticleSize, MaxParticleSize, t);
             _mainModule.startSize = new ParticleSystem.MinMaxCurve(size * 0.7f, size * 1.3f);
+        }
+
+        public void SetAlarmMode(bool alarm, float intensity = 1f, float concentration = 0f)
+        {
+            InAlarmMode = alarm;
+            AlarmIntensity = intensity;
+            MethaneConcentration = concentration;
+
+            if (!alarm) return;
+
+            _colorModule.color = new ParticleSystem.MinMaxGradient(CreateAlarmGradient(intensity, concentration));
+
+            float alarmEmission = BaseEmissionRate * 4f * intensity;
+            _emissionModule.rateOverTime = Mathf.Min(alarmEmission, 600f);
+
+            _mainModule.startSize = new ParticleSystem.MinMaxCurve(0.3f, 0.7f);
+            _mainModule.startLifetime = ParticleLifetime * 0.6f;
+
+            var noiseModule = _particleSystem.noise;
+            noiseModule.strength = 0.5f * intensity;
+            noiseModule.frequency = 1.5f;
+        }
+
+        public void SetWarningMode(bool warning, float concentration = 0f)
+        {
+            InWarningMode = warning;
+            if (InAlarmMode) return;
+
+            if (!warning) return;
+
+            _colorModule.color = new ParticleSystem.MinMaxGradient(CreateWarningGradient(concentration));
+
+            float warnEmission = BaseEmissionRate * 2f;
+            _emissionModule.rateOverTime = Mathf.Min(warnEmission, 400f);
+        }
+
+        static Gradient CreateAlarmGradient(float intensity, float concentration)
+        {
+            float t = Mathf.Clamp01(concentration / 0.15f);
+
+            var g = new Gradient();
+            g.SetKeys(
+                new GradientColorKey[]
+                {
+                    new GradientColorKey(Color.Lerp(
+                        new Color(1.0f, 0.4f, 0.0f),
+                        new Color(1.0f, 0.1f, 0.0f), t), 0f),
+                    new GradientColorKey(Color.Lerp(
+                        new Color(1.0f, 0.2f, 0.0f),
+                        new Color(0.9f, 0.05f, 0.0f), t), 0.4f),
+                    new GradientColorKey(Color.Lerp(
+                        new Color(0.8f, 0.1f, 0.0f),
+                        new Color(0.5f, 0.0f, 0.0f), t), 1f)
+                },
+                new GradientAlphaKey[]
+                {
+                    new GradientAlphaKey(0.3f * intensity, 0f),
+                    new GradientAlphaKey(1.0f * intensity, 0.15f),
+                    new GradientAlphaKey(0.9f * intensity, 0.5f),
+                    new GradientAlphaKey(0f, 1f)
+                }
+            );
+            return g;
+        }
+
+        static Gradient CreateWarningGradient(float concentration)
+        {
+            float t = Mathf.Clamp01(concentration / 0.05f);
+
+            var g = new Gradient();
+            g.SetKeys(
+                new GradientColorKey[]
+                {
+                    new GradientColorKey(Color.Lerp(
+                        new Color(0.4f, 0.85f, 1.0f),
+                        new Color(1.0f, 0.8f, 0.0f), t), 0f),
+                    new GradientColorKey(Color.Lerp(
+                        new Color(0.3f, 0.7f, 0.95f),
+                        new Color(1.0f, 0.6f, 0.0f), t), 0.5f),
+                    new GradientColorKey(Color.Lerp(
+                        new Color(0.2f, 0.5f, 0.8f),
+                        new Color(0.8f, 0.4f, 0.0f), t), 1f)
+                },
+                new GradientAlphaKey[]
+                {
+                    new GradientAlphaKey(0.1f, 0f),
+                    new GradientAlphaKey(0.8f, 0.2f),
+                    new GradientAlphaKey(0.9f, 0.6f),
+                    new GradientAlphaKey(0f, 1f)
+                }
+            );
+            return g;
         }
 
         static Gradient CreateDefaultGradient()

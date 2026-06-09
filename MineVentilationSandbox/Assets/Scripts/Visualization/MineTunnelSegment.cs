@@ -26,6 +26,12 @@ namespace MineVentilation.Visualization
         public float FlowSpeed;
         public bool FlowReversed;
 
+        [Header("Methane Hazard State")]
+        public float MethaneConcentration;
+        public bool IsAlarm;
+        public bool IsWarning;
+        public float AlarmPulse;
+
         private MeshFilter _meshFilter;
         private MeshRenderer _meshRenderer;
         private Material _tunnelMaterial;
@@ -143,18 +149,52 @@ namespace MineVentilation.Visualization
                 _meshRenderer.material = _tunnelMaterial;
             }
 
-            Color displayColor;
+            if (IsAlarm)
+            {
+                Color alarmBase = new Color(1.0f, 0.15f, 0.0f);
+                Color alarmPulse = Color.Lerp(alarmBase, new Color(1.0f, 0.5f, 0.0f), AlarmPulse);
+                _tunnelMaterial.SetColor("_Color", alarmPulse);
+                _tunnelMaterial.SetColor("_EmissionColor", alarmPulse * (1.5f + AlarmPulse * 1.5f));
+                return;
+            }
+
+            if (IsWarning)
+            {
+                Color warnColor = Color.Lerp(
+                    new Color(0.6f, 0.6f, 0.2f),
+                    new Color(1.0f, 0.7f, 0.0f),
+                    Mathf.Clamp01(MethaneConcentration / 0.05f));
+                Color displayColor = Color.Lerp(BaseColor, warnColor, 0.6f);
+                _tunnelMaterial.SetColor("_Color", displayColor);
+                _tunnelMaterial.SetColor("_EmissionColor", warnColor * 0.5f);
+                return;
+            }
+
+            Color normalColor;
             if (FlowReversed)
             {
-                displayColor = ReverseFlowColor;
+                normalColor = ReverseFlowColor;
             }
             else
             {
-                displayColor = Color.Lerp(LowFlowColor, HighFlowColor, FlowSpeed);
+                normalColor = Color.Lerp(LowFlowColor, HighFlowColor, FlowSpeed);
             }
 
-            _tunnelMaterial.SetColor("_Color", Color.Lerp(BaseColor, displayColor, 0.5f));
-            _tunnelMaterial.SetColor("_EmissionColor", displayColor * FlowSpeed * 0.3f);
+            _tunnelMaterial.SetColor("_Color", Color.Lerp(BaseColor, normalColor, 0.5f));
+            _tunnelMaterial.SetColor("_EmissionColor", normalColor * FlowSpeed * 0.3f);
+        }
+
+        public void SetMethaneConcentration(float concentration, bool isAlarm, bool isWarning, float pulse)
+        {
+            MethaneConcentration = concentration;
+            IsAlarm = isAlarm;
+            IsWarning = isWarning;
+            AlarmPulse = pulse;
+
+            if (_meshBuilt)
+            {
+                UpdateMaterial();
+            }
         }
 
         public Vector3 GetTunnelDirection()
