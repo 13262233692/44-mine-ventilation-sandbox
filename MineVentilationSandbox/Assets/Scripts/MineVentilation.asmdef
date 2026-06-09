@@ -1,0 +1,14 @@
+{
+    "name": "MineVentilation",
+    "rootNamespace": "MineVentilation",
+    "references": ["MineVentilation.Core", "MineVentilation.Visualization"],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
