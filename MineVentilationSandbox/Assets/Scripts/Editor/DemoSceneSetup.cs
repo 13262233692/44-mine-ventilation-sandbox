@@ -205,6 +205,37 @@ namespace MineVentilation.Editor
             Debug.Log("[矿井通风] 已恢复正常通风状态");
         }
 
+        [MenuItem("矿井通风/压力测试(含短路风门)", false, 5)]
+        public static void StressTestWithShortCircuit()
+        {
+            var simulator = FindObjectOfType<VentilationSimulator>();
+            if (simulator == null)
+            {
+                CreateDemoScene();
+                simulator = FindObjectOfType<VentilationSimulator>();
+            }
+
+            if (simulator != null)
+            {
+                simulator.SolverMode = SolverMethod.HybridSequential;
+                simulator.BuildStressTestNetwork();
+                simulator.RunSolverAsync();
+                Debug.Log("[矿井通风] 压力测试网络已加载(含短路风门,混合解算模式)");
+            }
+        }
+
+        [MenuItem("矿井通风/强制Newton-Raphson解算", false, 6)]
+        public static void ForceNewtonRaphson()
+        {
+            var simulator = FindObjectOfType<VentilationSimulator>();
+            if (simulator == null) return;
+
+            simulator.SolverMode = SolverMethod.NewtonRaphsonOnly;
+            simulator.RunSolver();
+            simulator.BuildVisualization();
+            Debug.Log("[矿井通风] 已切换为Newton-Raphson解算模式");
+        }
+
         [MenuItem("矿井通风/导出网络数据", false, 10)]
         public static void ExportNetworkData()
         {

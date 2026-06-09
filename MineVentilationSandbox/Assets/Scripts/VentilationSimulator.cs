@@ -1,3 +1,4 @@
+using System.Collections;
 using MineVentilation.Core;
 using MineVentilation.Visualization;
 using UnityEngine;
@@ -7,11 +8,12 @@ namespace MineVentilation
     public class VentilationSimulator : MonoBehaviour
     {
         [Header("Solver Settings")]
+        public SolverMethod SolverMode = SolverMethod.HybridSequential;
         public float ConvergenceTolerance = 0.001f;
-        public int MaxIterations = 500;
-        public float RelaxationFactor = 1.0f;
-        public bool EnableDamping = true;
-        public float DampingThreshold = 50f;
+        public int MaxIterationsHardyCross = 200;
+        public int MaxIterationsNewtonRaphson = 80;
+        public bool UseAsyncSolving = true;
+        public float SolverTimeoutSeconds = 5f;
 
         [Header("Visualization Settings")]
         public float WorldScale = 1f;
@@ -34,16 +36,20 @@ namespace MineVentilation
         public float CameraMaxDistance = 200f;
 
         private VentilationNetwork _network;
-        private HardyCrossSolver _solver;
+        private HybridVentilationSolver _solver;
         private VentilationNetworkMapper _mapper;
         private SolverResult _lastResult;
         private float _resolveTimer;
         private bool _networkDirty;
+        private bool _isSolving;
+        private string _solverStatus = "";
+        private float _solverStartTime;
 
         public VentilationNetwork Network => _network;
-        public HardyCrossSolver Solver => _solver;
+        public HybridVentilationSolver Solver => _solver;
         public SolverResult LastResult => _lastResult;
         public VentilationNetworkMapper Mapper => _mapper;
+        public bool IsSolving => _isSolving;
 
         void Awake()
         {
@@ -62,16 +68,24 @@ namespace MineVentilation
             HandleCameraControl();
             HandleKeyboardInput();
 
-            if (AutoResolveOnChange && _networkDirty)
+            if (_isSolving)
+            {
+                if (Time.time - _solverStartTime > SolverTimeoutSeconds)
+                {
+                    Debug.LogWarning("[通风模拟] 解算超时,强制终止");
+                    _isSolving = false;
+                    _solverStatus = "超时终止";
+                }
+            }
+
+            if (AutoResolveOnChange && _networkDirty && !_isSolving)
             {
                 _resolveTimer += Time.deltaTime;
                 if (_resolveTimer >= ResolveInterval)
                 {
                     _resolveTimer = 0f;
                     _networkDirty = false;
-                    RunSolver();
-                    _mapper.ApplySolverResults(_lastResult);
-                    UpdateUI();
+                    RunSolverAsync();
                 }
             }
         }
@@ -118,24 +132,205 @@ namespace MineVentilation
             Debug.Log($"[通风模拟] 网络构建完成: {_network.Nodes.Count}节点, {_network.Edges.Count}巷道, {_network.Loops.Count}独立回路, {_network.Fans.Count}风机");
         }
 
+        public void BuildStressTestNetwork()
+        {
+            _network = new VentilationNetwork();
+
+            int surfaceNode = 0;
+            _network.AddNode(surfaceNode, "进风井口", new Vector3(0f, 0f, 0f));
+            _network.AddNode(1, "井底车场", new Vector3(0f, -80f, 0f));
+
+            _network.AddFan(0, "主通风机", 5000f, -50f, -1.0f);
+
+            int nodeId = 2;
+            int edgeId = 0;
+
+            _network.AddEdge(edgeId++, "主井", 0, 1, 0.03f, 80f, 16f, 17f, 30f);
+
+            int numLevels = 4;
+            int numPanelsPerLevel = 5;
+
+            for (int level = 0; level < numLevels; level++)
+            {
+                float levelDepth = -80f - (level + 1) * 60f;
+                float levelZ = (level + 1) * 40f;
+
+                int intakeNodeId = nodeId++;
+                _network.AddNode(intakeNodeId, $"水平{level + 1}进风", new Vector3(0f, levelDepth, levelZ));
+                _network.AddEdge(edgeId++, $"进风石门{level + 1}", 1, intakeNodeId, 0.02f + level * 0.005f, 60f, 10f, 13f, 15f - level * 2f);
+
+                int returnCollectNodeId = nodeId++;
+                _network.AddNode(returnCollectNodeId, $"水平{level + 1}回风汇", new Vector3(0f, levelDepth - 30f, levelZ));
+
+                for (int panel = 0; panel < numPanelsPerLevel; panel++)
+                {
+                    float panelX = (panel - numPanelsPerLevel / 2f) * 50f;
+                    int panelIntakeId = nodeId++;
+                    _network.AddNode(panelIntakeId, $"L{level + 1}P{panel + 1}进风", new Vector3(panelX, levelDepth, levelZ));
+
+                    _network.AddEdge(edgeId++, $"L{level + 1}P{panel + 1}进风巷",
+                        intakeNodeId, panelIntakeId, 0.03f + panel * 0.002f, 50f, 8f, 11f, 8f);
+
+                    int faceId = nodeId++;
+                    _network.AddNode(faceId, $"L{level + 1}P{panel + 1}工作面", new Vector3(panelX, levelDepth - 25f, levelZ));
+
+                    float faceResistance = 0.1f + panel * 0.01f;
+                    _network.AddEdge(edgeId++, $"L{level + 1}P{panel + 1}工作面",
+                        panelIntakeId, faceId, faceResistance, 25f, 5f, 8f, 5f);
+
+                    int panelReturnId = nodeId++;
+                    _network.AddNode(panelReturnId, $"L{level + 1}P{panel + 1}回风", new Vector3(panelX, levelDepth - 30f, levelZ));
+
+                    _network.AddEdge(edgeId++, $"L{level + 1}P{panel + 1}回风巷",
+                        faceId, panelReturnId, 0.05f + panel * 0.003f, 30f, 7f, 10f, 5f);
+
+                    _network.AddEdge(edgeId++, $"L{level + 1}P{panel + 1}回风汇",
+                        panelReturnId, returnCollectNodeId, 0.02f, 40f, 8f, 11f, 6f);
+
+                    if (panel > 0 && panel < numPanelsPerLevel)
+                    {
+                        float crossResistance = UnityEngine.Random.Range(0.001f, 0.005f);
+                        int prevPanelIntakeId = panelIntakeId - 3;
+                        if (_network.GetNode(prevPanelIntakeId) != null)
+                        {
+                            _network.AddEdge(edgeId++, $"L{level + 1}P{panel}-P{panel + 1}风门短路",
+                                prevPanelIntakeId, panelIntakeId, crossResistance, 10f, 4f, 7f, 1f);
+                        }
+                    }
+                }
+
+                if (level > 0)
+                {
+                    int prevReturnCollectId = returnCollectNodeId - numPanelsPerLevel * 3 - 2;
+                    if (_network.GetNode(prevReturnCollectId) != null)
+                    {
+                        _network.AddEdge(edgeId++, $"水平{level}-水平{level + 1}天井",
+                            prevReturnCollectId, returnCollectNodeId, 0.15f, 60f, 5f, 8f, 3f);
+                    }
+                }
+
+                int returnShaftBottomId = nodeId++;
+                _network.AddNode(returnShaftBottomId, $"水平{level + 1}回风井底", new Vector3(0f, levelDepth - 30f, 0f));
+                _network.AddEdge(edgeId++, $"水平{level + 1}总回风",
+                    returnCollectNodeId, returnShaftBottomId, 0.025f, 40f, 10f, 13f, 10f);
+            }
+
+            int returnShaftTopId = nodeId;
+            _network.AddNode(returnShaftTopId, "回风井口", new Vector3(0f, 0f, -40f));
+            _network.AddEdge(edgeId++, "回风井", nodeId - 1, returnShaftTopId, 0.04f, 80f, 14f, 16f, 20f, fanId: 0);
+
+            _network.FindIndependentLoops();
+
+            Debug.Log($"[通风模拟] 压力测试网络: {_network.Nodes.Count}节点, {_network.Edges.Count}巷道, {_network.Loops.Count}独立回路");
+        }
+
         public void RunSolver()
         {
             if (_network == null) return;
 
-            if (_solver == null)
-            {
-                _solver = new HardyCrossSolver(_network);
-            }
+            EnsureSolver();
 
-            _solver.ConvergenceTolerance = ConvergenceTolerance;
-            _solver.MaxIterations = MaxIterations;
-            _solver.RelaxationFactor = RelaxationFactor;
-            _solver.EnableDamping = EnableDamping;
-            _solver.DampingThreshold = DampingThreshold;
+            _solverStartTime = Time.time;
+            _isSolving = true;
+            _solverStatus = "解算中...";
 
+            _solver.OnSolverProgress += OnSolverProgress;
             _lastResult = _solver.Solve();
+            _solver.OnSolverProgress -= OnSolverProgress;
+
+            _isSolving = false;
+            _solverStatus = _lastResult.Converged ? "已收敛" : "未收敛";
 
             Debug.Log($"[通风模拟] {_lastResult.Diagnostics}");
+        }
+
+        public void RunSolverAsync()
+        {
+            if (_network == null || _isSolving) return;
+
+            EnsureSolver();
+
+            if (UseAsyncSolving)
+            {
+                _solverStartTime = Time.time;
+                _isSolving = true;
+                _solverStatus = "异步解算中...";
+                StartCoroutine(SolveCoroutine());
+            }
+            else
+            {
+                RunSolver();
+                _mapper.ApplySolverResults(_lastResult);
+                UpdateUI();
+            }
+        }
+
+        IEnumerator SolveCoroutine()
+        {
+            SolverResult result = null;
+
+            var thread = new System.Threading.Thread(() =>
+            {
+                try
+                {
+                    _solver.OnSolverProgress += OnSolverProgress;
+                    result = _solver.Solve();
+                    _solver.OnSolverProgress -= OnSolverProgress;
+                }
+                catch (System.Exception e)
+                {
+                    result = new SolverResult
+                    {
+                        Converged = false,
+                        Diagnostics = $"解算异常: {e.Message}"
+                    };
+                }
+            });
+
+            thread.Start();
+
+            while (thread.IsAlive)
+            {
+                if (Time.time - _solverStartTime > SolverTimeoutSeconds)
+                {
+                    Debug.LogWarning("[通风模拟] 解算超时,强制终止线程");
+                    try { thread.Abort(); } catch { }
+                    _isSolving = false;
+                    _solverStatus = "超时终止";
+                    yield break;
+                }
+                yield return null;
+            }
+
+            _lastResult = result;
+            _isSolving = false;
+            _solverStatus = _lastResult != null && _lastResult.Converged ? "已收敛" : "未收敛";
+
+            if (_lastResult != null)
+            {
+                Debug.Log($"[通风模拟] {_lastResult.Diagnostics}");
+                _mapper.ApplySolverResults(_lastResult);
+                UpdateUI();
+            }
+        }
+
+        void EnsureSolver()
+        {
+            if (_solver == null)
+            {
+                _solver = new HybridVentilationSolver(_network);
+            }
+
+            _solver.Method = SolverMode;
+            _solver.ConvergenceTolerance = ConvergenceTolerance;
+            _solver.MaxIterationsHardyCross = MaxIterationsHardyCross;
+            _solver.MaxIterationsNewtonRaphson = MaxIterationsNewtonRaphson;
+        }
+
+        void OnSolverProgress(string message)
+        {
+            _solverStatus = message;
+            Debug.Log($"[通风解算] {message}");
         }
 
         public void BuildVisualization()
@@ -241,6 +436,12 @@ namespace MineVentilation
                 RunSolver();
                 BuildVisualization();
             }
+
+            if (Input.GetKeyDown(KeyCode.T))
+            {
+                BuildStressTestNetwork();
+                RunSolverAsync();
+            }
         }
 
         void UpdateUI()
@@ -266,13 +467,22 @@ namespace MineVentilation
 
         void OnGUI()
         {
-            GUILayout.BeginArea(new Rect(10, 10, 380, 600));
+            GUILayout.BeginArea(new Rect(10, 10, 420, 700));
             GUILayout.Label("<b>深部矿井通风模拟沙盘</b>", new GUIStyle(GUI.skin.label) { fontSize = 18, fontStyle = FontStyle.Bold });
-            GUILayout.Space(8);
+            GUILayout.Space(5);
+
+            if (_isSolving)
+            {
+                Color prevC = GUI.color;
+                GUI.color = Color.yellow;
+                GUILayout.Label($"⟳ {_solverStatus}");
+                GUI.color = prevC;
+            }
 
             if (_network != null)
             {
                 GUILayout.Label($"网络: {_network.Nodes.Count}节点 | {_network.Edges.Count}巷道 | {_network.Loops.Count}回路");
+                GUILayout.Label($"解算模式: {SolverMode}");
 
                 if (_lastResult != null)
                 {
@@ -282,7 +492,8 @@ namespace MineVentilation
                 GUILayout.Space(5);
                 GUILayout.Label("─── 各巷道风量 ───", new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold });
 
-                for (int i = 0; i < _network.Edges.Count; i++)
+                int maxDisplay = Mathf.Min(_network.Edges.Count, 30);
+                for (int i = 0; i < maxDisplay; i++)
                 {
                     var edge = _network.Edges[i];
                     float flow = _lastResult != null && i < _lastResult.BranchFlows.Count
@@ -291,19 +502,25 @@ namespace MineVentilation
 
                     string direction = flow >= 0 ? "→" : "←";
                     string fanLabel = edge.FanId >= 0 ? $" [风机{edge.FanId}]" : "";
+                    string resistLabel = edge.Resistance < 0.01f ? " ⚠短路" : "";
 
                     Color prevColor = GUI.color;
                     if (Mathf.Abs(flow) < 4f) GUI.color = Color.red;
                     else if (Mathf.Abs(flow) > 50f) GUI.color = Color.cyan;
                     else GUI.color = Color.white;
 
-                    GUILayout.Label($"{edge.Name}{fanLabel}: {direction} {Mathf.Abs(flow):F2} m³/s");
+                    GUILayout.Label($"{edge.Name}{fanLabel}{resistLabel}: {direction} {Mathf.Abs(flow):F2} m³/s");
                     GUI.color = prevColor;
+                }
+
+                if (_network.Edges.Count > maxDisplay)
+                {
+                    GUILayout.Label($"... 还有{_network.Edges.Count - maxDisplay}条巷道");
                 }
 
                 GUILayout.Space(5);
                 GUILayout.Label("─── 操作 ───", new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold });
-                GUILayout.Label("[Space] 重新解算  [R] 重置风量  [D] 加载演示");
+                GUILayout.Label("[Space] 重新解算  [R] 重置  [D] 演示  [T] 压力测试");
                 GUILayout.Label("[右键拖拽] 旋转  [滚轮] 缩放");
             }
 
